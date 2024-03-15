@@ -1,3 +1,12 @@
+- [esp32\_korvo+chinese\_tts](#esp32_korvochinese_tts)
+  - [前言](#前言)
+  - [Chinese\_TTS示例详细说明](#chinese_tts示例详细说明)
+  - [Chinese\_tts移植功能](#chinese_tts移植功能)
+    - [移植Wifi功能](#移植wifi功能)
+      - [遇到的问题](#遇到的问题)
+      - [具体流程](#具体流程)
+
+
 # esp32_korvo+chinese_tts
 ## 前言
 我们知道esp-korvo是乐鑫专门为语音开发设计的开发板，但是我不是很建议使用这一块板子进行开发，移植难度较大，可能是我太菜的缘故，但是既然手头上有他，那就开发看看
