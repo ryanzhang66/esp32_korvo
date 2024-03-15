@@ -5,6 +5,10 @@
     - [移植Wifi功能](#移植wifi功能)
       - [遇到的问题](#遇到的问题)
       - [具体流程](#具体流程)
+    - [实现TCP客户端网络通信](#实现tcp客户端网络通信)
+      - [wifi功能封装](#wifi功能封装)
+      - [TCP功能封装](#tcp功能封装)
+      - [线程调用功能函数](#线程调用功能函数)
 
 
 # esp32_korvo+chinese_tts
@@ -279,6 +283,8 @@
 
 - 首先在main.c中添加以下代码
     ```c
+    ...
+                #######start#######
     #include <nvs_flash.h>
     #include <esp_event.h>
     #include <esp_wifi.h>
@@ -340,7 +346,7 @@
         esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL, NULL);
 
         esp_wifi_start();
-
+                #######end#######
 
     #if defined CONFIG_ESP32_S3_EYE_BOARD
         printf("Not Support esp32-s3-eye board\n");
@@ -371,3 +377,155 @@
 - 现在你可以看到wifi功能移植成功（我把串口功能去掉了）
   ![alt text](./image/image-3.png) 
 
+
+### 实现TCP客户端网络通信
+
+#### wifi功能封装
+
+我们在移植wifi功能到esp-korvo上面时，没有考虑一些应用因素，为了方便应用，这里我将wifi分装成一个函数，使他可以成为FreeRTOS的task运行，也就是创建一个线程来运行wifi。
+
+- 参考esp-idf所提供的有关wifi的示例：station_example_main，为wifi功能单独设置 .c/.h 文件实现。将示例中的宏定义修改为实际值：
+    ```c
+    #define EXAMPLE_ESP_WIFI_SSID      YOUR_WIFI_SSID
+    #define EXAMPLE_ESP_WIFI_PASS      YOUR_WIFI_PASSWORD
+    #define EXAMPLE_ESP_MAXIMUM_RETRY  3
+    ```
+
+- 在工程的主程序 main.c 中封装执行wifi功能：
+    ```c
+    #include "freertos/event_groups.h"
+
+    EventGroupHandle_t wifiEvent;
+    const EventBits_t wifiConnectedBit = (1 << 0);
+
+    void wifiTask(void *pvParameters) {
+        // 创建事件组
+        wifiEvent = xEventGroupCreate();
+
+        esp_err_t ret = nvs_flash_init();
+        if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+        {
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            ret = nvs_flash_init();
+        }
+        ESP_ERROR_CHECK(ret);
+
+        wifi_init_sta();
+
+        // Wi-Fi连接成功后设置事件位
+        xEventGroupSetBits(wifiEvent, wifiConnectedBit);
+
+        vTaskDelete(NULL);  //这个是必须的！
+    }
+    ```
+    为什么要创建事件位？因为我需要TCP_task在wifi连接后执行。
+
+    ##### 遇到的问题：
+    - **问题描述：`FreeRTOS Task "Wifi Task" should not return, Aborting now!**
+    - 问题原因：当使用FreeRTOS创建任务时，任务函数不应该返回。如果任务函数返回，FreeRTOS将会终止
+    - 解决办法：在wifiTask函数的最后添加`vTaskDelete(NULL);`在任务完成后调用任务删除函数，以确保任务不会返回。
+
+- 移植本项目`main/src/wifi_connect.c`和`main/include/wifi_connect.h`到你项目的src和include文件夹里面，然后设置`main/CMakeLists.txt`
+    ```
+    set(srcs
+        main.c
+        tts_urat.c
+        src/wifi_connect.c
+        )
+
+    set(include_dirs 
+        include
+        )
+    ``` 
+
+#### TCP功能封装
+我们同样需要将tcp客户端的任务封装进task里面执行。
+
+- 在工程的主程序 main.c 中封装执行tcp_client功能：
+    ```c
+    #include <lwip/sockets.h>
+    #include "lwip/err.h"
+
+    #define HOST_IP_ADDR "192.168.208.22"
+    #define PORT 8888
+
+    static const char *payload = "Message from ESP32 ";
+
+    static void tcp_client_task(void *pvParameters)
+    {
+        char rx_buffer[128];
+        char host_ip[] = HOST_IP_ADDR;
+        int addr_family = 0;
+        int ip_protocol = 0;
+
+        while (1) {
+            struct sockaddr_in dest_addr;
+            dest_addr.sin_addr.s_addr = inet_addr(host_ip);
+            dest_addr.sin_family = AF_INET;
+            dest_addr.sin_port = htons(PORT);
+
+            xEventGroupWaitBits(wifiEvent, wifiConnectedBit, pdFALSE, pdFALSE, portMAX_DELAY);
+
+            int sock =  socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+            if (sock < 0) {
+                ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+                break;
+            }
+            ESP_LOGI(TAG, "Socket created, connecting to %s:%d", host_ip, PORT);
+
+            int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+            if (err != 0) {
+                ESP_LOGE(TAG, "Socket unable to connect: errno %d", errno);
+                break;
+            }
+            ESP_LOGI(TAG, "Successfully connected");
+
+            while (1) {
+                int err = send(sock, payload, strlen(payload), 0);
+                if (err < 0) {
+                    ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
+                    break;
+                }
+
+                int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+                // Error occurred during receiving
+                if (len < 0) {
+                    ESP_LOGE(TAG, "recv failed: errno %d", errno);
+                    break;
+                }
+                // Data received
+                else {
+                    rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string
+                    ESP_LOGI(TAG, "Received %d bytes from %s:", len, host_ip);
+                    ESP_LOGI(TAG, "%s", rx_buffer);
+                }
+
+                vTaskDelay(2000 / portTICK_PERIOD_MS);
+            }
+
+            if (sock != -1) {
+                ESP_LOGE(TAG, "Shutting down socket and restarting...");
+                shutdown(sock, 0);
+                close(sock);
+            }
+        }
+        vTaskDelete(NULL);
+    }
+    ``` 
+
+#### 线程调用功能函数
+
+- 我们在主函数中添加以下代码：
+    ```c
+        ...
+    int app_main()
+    {
+        // 创建Wi-Fi任务
+        xTaskCreate(wifiTask, "Wifi Task", 4096, NULL, 1, NULL);
+
+        // 创建TCP-Client任务
+        xTaskCreate(tcp_client_task, "TCP Client Task", 4096, NULL, 2, NULL);
+        ...
+    ``` 
+- 最终的展示效果
+    ![alt text](./image/1.gif) 
