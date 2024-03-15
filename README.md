@@ -34,11 +34,11 @@
 
 接下来我们进入到main文件夹中，看看其中有什么。  
 ![alt text](./image/image-1.png)  
-> include : 包含tts_uart.h
-> CMakeLists.txt ： main文件夹的编译信息
-> idf_compnent.yml : 加载需要使用esp-idf组件的信息
-> main.c : 主程序
-> ts_uart.c : tts串口功能实现的主程序
+> include : 包含tts_uart.h  
+> CMakeLists.txt ： main文件夹的编译信息  
+> idf_compnent.yml : 加载需要使用esp-idf组件的信息  
+> main.c : 主程序  
+> ts_uart.c : tts串口功能实现的主程序  
 
 现在看来这个工程我们可能需要改动的文件不是很多，在main文件夹中，我们可能需要改动的有CMakeLists.txt，idf_compnent.yml，main.c。这里我重点说明一下`main/CMakeLists.txt `。  
 
